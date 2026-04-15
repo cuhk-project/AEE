@@ -31,8 +31,6 @@ We recommend two separate environments:
 
 - **deer** (for DeepSeek-R1-Distill and other general models)  
   See `requirements-deer.txt` (e.g., `vllm==0.6.1`, `transformers==4.46.3`)
-- **deer-qwen3** (for Qwen3 models)  
-  See `requirements-deer-qwen3.txt` (e.g., `vllm==0.17.1`, `transformers==4.57.6`)
 
 Example with conda:
 
@@ -40,12 +38,6 @@ Example with conda:
 conda create -n deer python=3.10 -y
 conda activate deer
 pip install -r requirements-deer.txt
-```
-
-```bash
-conda create -n deer-qwen3 python=3.10 -y
-conda activate deer-qwen3
-pip install -r requirements-deer-qwen3.txt
 ```
 
 ## Quick Start
@@ -73,28 +65,8 @@ PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 conda run -n deer python vllm-aee.py \
   --gpu-memory-utilization 0.80
 ```
 
-### 2) Run AEE (Qwen3)
 
-```bash
-PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 conda run -n deer-qwen3 python vllm-aee-qwen3.py \
-  --model_name_or_path "Qwen/Qwen3-4B" \
-  --dataset_dir "./data/" \
-  --output_path "./outputs" \
-  --dataset "math_small" \
-  --threshold 0.95 \
-  --base_threshold 0.90 \
-  --ema_alpha 0.7 \
-  --adaptive_beta 1.0 \
-  --consistency_window 2 \
-  --max_generated_tokens 1024 \
-  --think_ratio 0.8 \
-  --batch_size 16 \
-  --policy avg2 \
-  --dtype bfloat16 \
-  --gpu-memory-utilization 0.85
-```
-
-### 3) Evaluate Outputs
+### 2) Evaluate Outputs
 
 ```bash
 PYTHONNOUSERSITE=1 conda run -n deer python check.py \
@@ -106,8 +78,8 @@ PYTHONNOUSERSITE=1 conda run -n deer python check.py \
 ## Supported Models and Datasets
 
 - Models:
-  - DeepSeek-R1-Distill-Qwen (1.5B, 7B)
-  - Qwen3 (4B, 14B)
+  - DeepSeek-R1-Distill-Qwen
+  - Qwen3 (todo)
 - Datasets:
   - MATH, GSM8K, AIME, AMC, GPQA, OlympiadBench
 
