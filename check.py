@@ -91,9 +91,8 @@ def read_jsonl(file_path):
 
 
 
-tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-
 def infer(args):
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     examples = load_data(args.data_name, args.split, args.data_dir)
     file_outputs = read_jsonl(args.generation_path)
     

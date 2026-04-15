@@ -1,0 +1,11 @@
+CUDA_VISIBLE_DEVICES=2 python vllm-vanilla-cot.py \
+    --model_name_or_path "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" \
+    --dataset_dir "./data/" \
+    --output_path "./outputs" \
+    --dataset "amc" \
+    --max_generated_tokens 2048 \
+    --batch_size 2000 \
+    --dtype bfloat16 \
+    --gpu-memory-utilization 0.9 \
+    --temperature 0.0 \
+    --top_p 1.0

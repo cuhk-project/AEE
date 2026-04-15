@@ -6,7 +6,6 @@ import json
 import time
 import argparse
 import sys
-import traceback
 import torch
 import torch.nn.functional as F
 from vllm.outputs import CompletionOutput
@@ -141,10 +140,11 @@ def calculate_average_max_prob_from_logprobs(logprobs_list, policy='avg2') -> fl
                  print(f"Warning: Unable to process logprobs at logprobs_list[{i}]: {e}")
         else:
              print(f"Warning: logprobs_list[{i}] is empty or invalid.")
-    # Calculate average
     if count_for_average == 0:
+        print("Warning: No valid token probabilities found for confidence calculation.")
         return 0.0
 
+    # Calculate average
     if policy == 'min':
         result = min_prob
     elif policy == 'avg1':
@@ -152,15 +152,31 @@ def calculate_average_max_prob_from_logprobs(logprobs_list, policy='avg2') -> fl
     elif policy == 'avg2':
         result = math.exp(log_prob_sum / count_for_average)
     else:
-        print(f"Warning: Unknown policy '{policy}', fallback to avg2.")
-        result = math.exp(log_prob_sum / count_for_average)
-
-    if not logprobs_list or not logprobs_list[-1]:
+        print(f"Warning: Unknown policy '{policy}', fallback to 0.0.")
         return 0.0
-    if (list(logprobs_list[-1].values())[-1].decoded_token) == '</think>':
+
+    last_decoded_token = None
+    try:
+        if logprobs_list and isinstance(logprobs_list[-1], dict) and logprobs_list[-1]:
+            last_logprob_obj = list(logprobs_list[-1].values())[-1]
+            if hasattr(last_logprob_obj, 'decoded_token'):
+                last_decoded_token = last_logprob_obj.decoded_token
+    except (IndexError, KeyError, AttributeError, TypeError) as e:
+        print(f"Warning: Unable to read last decoded token from logprobs: {e}")
+
+    if last_decoded_token == '</think>':
         return result
     else:
+        if last_decoded_token is None:
+            print("Warning: Missing last decoded token in logprobs, fallback confidence to 0.0.")
         return 0.0
+
+
+def normalize_trial_answer(answer_text: str) -> str:
+    """Normalize trial answer string for temporal consistency matching."""
+    if not answer_text:
+        return ""
+    return " ".join(answer_text.strip().split())
 
 
 def parse_args():
@@ -177,9 +193,13 @@ def parse_args():
     parser.add_argument("--points", type=int, default=1) # 1: 'Wait' as thinking transition point. 0: 'Alternatively' as thinking transition point. 
     parser.add_argument("--af", type=int, default=0) # answer forcing at end of sequence
     parser.add_argument("--max_judge_steps", type=int, default=10) # Limit the maximum number of answer attempts to save time cost.
-    parser.add_argument('--policy', type=str, default="avg2", choices=["min", "avg1", "avg2"]) # Strategy for Calculating Answer Confidence
+    parser.add_argument('--policy', type=str, default="avg2", choices=['min', 'avg1', 'avg2']) # Strategy for Calculating Answer Confidence
 
-    parser.add_argument('--threshold', type=float, default=0.95) # The answer confidence threshold used to determine early exit.
+    parser.add_argument('--threshold', type=float, default=0.95) # Legacy threshold flag kept for compatibility.
+    parser.add_argument('--base_threshold', type=float, default=None, help="Base threshold lambda_base for adaptive early exit.")
+    parser.add_argument('--ema_alpha', type=float, default=0.7, help="EMA factor alpha for confidence smoothing.")
+    parser.add_argument('--adaptive_beta', type=float, default=1.0, help="Adaptive threshold coefficient beta.")
+    parser.add_argument('--consistency_window', type=int, default=3, help="Window n for temporal consistency check.")
     parser.add_argument('--max_generated_tokens', '--max-len', type=int, default=16384, dest="max_len") # total token budget
     parser.add_argument('--dataset', type=str, default='math') # dataset name
     parser.add_argument('--output_path', type=str, default='./outputs') # output path
@@ -197,17 +217,23 @@ def parse_args():
 def main():
     args = parse_args()
     args.model_context_len = args.max_len + 8000
+    if args.base_threshold is None:
+        args.base_threshold = args.threshold
+
     print(f"Using vLLM LLM object for direct inference (batch processing)")
     print(f"Model path: {args.model_name_or_path}")
     print(f"Dataset: {args.dataset}")
-    print(f"Early exit probability threshold: {args.threshold}")
+    print(f"AEE base threshold (lambda_base): {args.base_threshold}")
+    print(f"AEE EMA alpha: {args.ema_alpha}")
+    print(f"AEE adaptive beta: {args.adaptive_beta}")
+    print(f"AEE consistency window: {args.consistency_window}")
     print(f"Max total generated tokens: {args.max_len}")
     print(f"Thinking phase ratio: {args.think_ratio}")
     print(f"Batch size: {args.batch_size}")
     print(f"Max tokens for probability check phase: {args.prob_check_max_tokens}")
 
     print("\nInitializing vLLM LLM engine...")
-    available_gpus = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(',')
+    available_gpus = os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')
     try:
         llm_engine = LLM(
             model=args.model_name_or_path,
@@ -232,8 +258,7 @@ def main():
 
 
     except Exception as e:
-        print(f"Failed to initialize vLLM LLM engine or load tokenizer: {repr(e)}")
-        traceback.print_exc()
+        print(f"Failed to initialize vLLM LLM engine or load tokenizer: {e}")
         sys.exit(1)
 
     sys_prompt = ['Please reason step by step, and put your final answer within \\boxed{}.'][0] 
@@ -251,7 +276,7 @@ def main():
     model_dir_name = os.path.basename(os.path.normpath(args.model_name_or_path))
     output_dir = f'{args.output_path}/{model_dir_name}/{args.dataset}'
     os.makedirs(output_dir, exist_ok=True)
-    output_file = f'{output_dir}/greedy_p{str(args.threshold)}_ratio{str(args.think_ratio)}_len{str(args.max_len)}_temperature{str(args.temperature)}_run_time{args.run_time}_no_thinking{args.no_thinking}_rep{args.rep}_points{args.points}_policy{args.policy}.jsonl'
+    output_file = f'{output_dir}/greedy_p{str(args.base_threshold)}_ratio{str(args.think_ratio)}_len{str(args.max_len)}_temperature{str(args.temperature)}_run_time{args.run_time}_no_thinking{args.no_thinking}_rep{args.rep}_points{args.points}_policy{args.policy}_a{args.ema_alpha}_b{args.adaptive_beta}_n{args.consistency_window}.jsonl'
 
     print(f"\nStarting processing, total questions: {len(questions_json)}")
     start_time = time.time()
@@ -308,6 +333,12 @@ def main():
             'too_long': 0,
             'rep_end': 0,
             'high_prob': 0,
+            'aee_exit': 0,
+            'consistency_ok': 0,
+            'ema_conf_prev': 0.0,
+            'ema_conf_curr': 0.0,
+            'adaptive_threshold': args.base_threshold,
+            'trial_answers': [],
             'regular_end': 0,
             'thinking_steps': 0,
             'output_dict': {}, 
@@ -327,6 +358,12 @@ def main():
             'too_long': 0,
             'rep_end': 0,
             'high_prob': 0,
+            'aee_exit': 0,
+            'consistency_ok': 0,
+            'ema_conf_prev': 0.0,
+            'ema_conf_curr': 0.0,
+            'adaptive_threshold': args.base_threshold,
+            'trial_answers': [],
             'regular_end': 0,
             'thinking_steps': 0,
             'output_dict': {}, 
@@ -609,7 +646,11 @@ def main():
                 completion_output = output.outputs[0]
                 generated_text = completion_output.text
                 generated_ids = completion_output.token_ids
-                last_token_id = generated_ids[-1]
+                if generated_ids:
+                    last_token_id = generated_ids[-1]
+                else:
+                    print(f"Warning: Empty token_ids for question {q_idx}, step {step_type}.")
+                    last_token_id = tokenizer.eos_token_id
 
                 rep = seq_rep_n(state['generated_thinking_last_trun'], generated_text, state['rep_end'])
                 state['rep_end'] = rep
@@ -643,26 +684,58 @@ def main():
                          print(f"Warning: No logprobs returned for prob_check_gen for question {q_idx}. Setting pred_prob to 0.0.")
                          state['pred_prob'] = 0.0
 
+                    trial_answer = normalize_trial_answer(generated_text)
+                    state['trial_answers'].append(trial_answer)
+
+                    consistency_window = max(1, args.consistency_window)
+                    recent_answers = state['trial_answers'][-consistency_window:]
+                    consistent = (
+                        len(recent_answers) == consistency_window
+                        and all(ans != "" for ans in recent_answers)
+                        and len(set(recent_answers)) == 1
+                    )
+                    state['consistency_ok'] = 1 if consistent else 0
+
+                    c_t = state['pred_prob']
+                    ema_prev = state['ema_conf_prev']
+                    ema_curr = args.ema_alpha * c_t + (1 - args.ema_alpha) * ema_prev
+                    lambda_t = max(args.base_threshold, args.adaptive_beta * ema_prev)
+
+                    state['ema_conf_curr'] = ema_curr
+                    state['adaptive_threshold'] = lambda_t
+                    state['ema_conf_prev'] = ema_curr
+
+                    dual_condition_exit = (ema_curr > lambda_t) and consistent
+
                     # Recalculate current thinking history token length before making decision
                     current_generated_thinking_tokens = len(tokenizer.encode(state['generated_thinking_history'], add_special_tokens=False))
                     thinking_limit_reached = current_generated_thinking_tokens >= think_limit_tokens - 50 
 
-                    if state['pred_prob'] > args.threshold or thinking_limit_reached: # Third condition: already generated to </think>
-                         # Probability high enough or reached thinking limit, switch to answer phase
+                    if dual_condition_exit or thinking_limit_reached:
                          state['state'] = 'needs_answer'
                          if thinking_limit_reached:
                              print(f"\nQuestion {q_idx}: Actually reached thinking limit ({current_generated_thinking_tokens}/{think_limit_tokens}). Switching to answer phase.")
                              state['too_long'] = 1
                          else:
-                             print(f"\nQuestion {q_idx}: Reached early exit threshold ({state['pred_prob']:.4f} > {args.threshold}). Switching to answer phase.")
+                             print(
+                                 f"\nQuestion {q_idx}: AEE exit triggered "
+                                 f"(C_t={c_t:.4f}, C_t_tilde={ema_curr:.4f}, lambda_t={lambda_t:.4f}, "
+                                 f"consistent={consistent}). Switching to answer phase."
+                             )
                              state['high_prob'] = 1
+                             state['aee_exit'] = 1
                     else:
-                         # Probability not high enough, need more thinking
                          state['state'] = 'needs_thought_chunk'
                          if not state['current_full_sequence'].strip().endswith(continue_str) and state['thinking_steps'] != 0:
                              state['current_full_sequence'] += continue_str
                              state['generated_thinking_history'] += continue_str
-                         print(f"\nQuestion {q_idx}: Early exit threshold not reached ({state['pred_prob']:.4f} <= {args.threshold}), thinking history length ({current_generated_thinking_tokens}/{think_limit_tokens}). Appending '{continue_str}' and continuing thinking.")
+                         print(
+                             f"\nQuestion {q_idx}: AEE exit not triggered "
+                             f"(C_t={c_t:.4f}, C_t_tilde={ema_curr:.4f}, lambda_t={lambda_t:.4f}, "
+                             f"consistent={consistent}), thinking history length "
+                             f"({current_generated_thinking_tokens}/{think_limit_tokens}). "
+                             f"Appending '{continue_str}' and continuing thinking."
+                         )
 
                 elif step_type == 'answer':
                     state['generated_answer_history'] += (generated_text)
@@ -672,7 +745,20 @@ def main():
                         state['current_full_sequence'] = state['formatted_prompt'] + state['generated_thinking_history'] + state['generated_answer_history']
                         state['state'] = 'finished'
                         final_response_text = state['generated_thinking_history'] + state['generated_answer_history']
-                        state['output_dict'] = {'question': state['question_data']['problem'], 'generated_responses': [final_response_text], 'gold_answer': state['question_data']['answer'], 'too_long': state['too_long'], 'thinking_steps': state['thinking_steps'], 'rep_end': state['rep_end'], 'high_prob': state['high_prob'],'regular_end': state['regular_end']}
+                        state['output_dict'] = {
+                            'question': state['question_data']['problem'],
+                            'generated_responses': [final_response_text],
+                            'gold_answer': state['question_data']['answer'],
+                            'too_long': state['too_long'],
+                            'thinking_steps': state['thinking_steps'],
+                            'rep_end': state['rep_end'],
+                            'high_prob': state['high_prob'],
+                            'regular_end': state['regular_end'],
+                            'aee_exit': state['aee_exit'],
+                            'consistency_ok': state['consistency_ok'],
+                            'ema_conf_curr': state['ema_conf_curr'],
+                            'adaptive_threshold': state['adaptive_threshold'],
+                        }
                         if q_idx in active_questions_indices:
                             active_questions_indices.remove(q_idx)
                             pbar.update(1)
@@ -681,7 +767,20 @@ def main():
                     state['current_full_sequence'] = state['formatted_prompt'] + state['generated_thinking_history'] + generated_text
                     state['state'] = 'finished'
                     final_response_text = state['generated_thinking_history'] + generated_text
-                    state['output_dict'] = {'question': state['question_data']['problem'], 'generated_responses': [final_response_text], 'gold_answer': state['question_data']['answer'], 'too_long': state['too_long'], 'thinking_steps': state['thinking_steps'], 'rep_end': state['rep_end'], 'high_prob': state['high_prob'],'regular_end': state['regular_end']}
+                    state['output_dict'] = {
+                        'question': state['question_data']['problem'],
+                        'generated_responses': [final_response_text],
+                        'gold_answer': state['question_data']['answer'],
+                        'too_long': state['too_long'],
+                        'thinking_steps': state['thinking_steps'],
+                        'rep_end': state['rep_end'],
+                        'high_prob': state['high_prob'],
+                        'regular_end': state['regular_end'],
+                        'aee_exit': state['aee_exit'],
+                        'consistency_ok': state['consistency_ok'],
+                        'ema_conf_curr': state['ema_conf_curr'],
+                        'adaptive_threshold': state['adaptive_threshold'],
+                    }
                     if q_idx in active_questions_indices:
                         active_questions_indices.remove(q_idx)
                         pbar.update(1)

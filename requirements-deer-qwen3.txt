@@ -1,0 +1,16 @@
+# deer-qwen3 environment (Qwen3 / new vLLM stack)
+vllm==0.17.1
+tqdm
+datasets
+torch
+transformers==4.57.6
+python_dateutil
+nltk
+
+# math_eval
+sympy==1.12
+antlr4-python3-runtime==4.11.1
+word2number
+Pebble
+timeout-decorator
+latex2sympy2==1.9.1

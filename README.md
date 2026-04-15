@@ -1,123 +1,120 @@
-# DEER 🦌: Dynamic Early Exit in Reasoning Models
-[![arXiv](https://img.shields.io/badge/arXiv-2504.15895-b31b1b.svg)](https://arxiv.org/abs/2504.15895)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![HuggingFace](https://img.shields.io/badge/HuggingFace-Transformers-orange)](https://huggingface.co/)
-[![vLLM](https://img.shields.io/badge/vLLM-Efficient%20LLM%20Inference-green)](https://github.com/vllm-project/vllm)
+# AEE: Adaptive Early Exit for Reasoning Models
 
-This is the repository of our paper: [Dynamic Early Exit in Reasoning Models](https://arxiv.org/abs/2504.15895).
+This repository is built on top of [DEER](https://arxiv.org/abs/2504.15895) (Dynamic Early Exit in Reasoning Models) and introduces **AEE (Adaptive Early Exit)** for more robust early-exit decisions during reasoning.
 
+## What AEE Adds Beyond DEER
 
-<p align="center"> <img src="./images/deer.png" style="width: 85%;" id="title-icon">       </p>
+AEE extends DEER's confidence-based exit mechanism with additional decision signals:
 
-**DEER** monitors model behavior at potential reasoning transition points and dynamically terminates the next reasoning chain’s generation when the model exhibits high confidence in a trial answer. It is consistently effective on 11 cutting-edge reasoning LLMs of varying series and sizes, reducing the length of CoT sequences by an average of **19.1% - 80.1%** while improving accuracy by **0.3% - 5.0%**.
+- **EMA-smoothed confidence**: Applies exponential moving average to trial-answer confidence to reduce single-step noise.
+- **Adaptive threshold**: Uses a history-aware dynamic threshold instead of a fixed threshold.
+- **Temporal consistency window**: Checks whether the latest `n` trial answers are consistent.
+- **Disjunctive exit**: Exit when either condition is met:
+  - Smoothed confidence exceeds the adaptive threshold, or
+  - Trial answers in the recent window are consistent and non-empty.
 
----
+## Project Structure
 
-## 🔥 **Latest Updates**
-- **[2025/05/20]** Released DEER code for mathematical reasoning tasks (HuggingFace & vLLM).
-- **[Coming Soon]** DEER for code generation tasks & Branch-Parallel Decoding Acceleration.
+- `vllm-aee.py` / `vllm-aee-qwen3.py`: Main AEE inference scripts
+- `vllm-deer.py` / `vllm-deer-qwen3.py`: DEER baseline scripts
+- `vllm-vanilla-cot.py`: Vanilla Chain-of-Thought scripts
+- `vanilla_deer.py`: Transformers-based DEER version
+- `check.py`: Evaluation script
+- `data/`: Benchmark datasets (MATH, GSM8K, AIME, AMC, GPQA, OlympiadBench, etc.)
+- `prompts/`: Prompt templates
+- `utils/`: Data processing and grading utilities
+- `bashes/`: Handy shell scripts for running experiments
 
----
+## Environment Setup
 
-## 🎯 Key Results
-Results on 11 reasoning models with 16k token budgets. "Acc" denotes accuracy, "Tok" denotes token count, and "CR" denotes compression rate.
-<p align="center"> <img src="./images/deer-main.png" style="width: 90%;" id="title-icon">       </p>
+We recommend two separate environments:
 
+- **deer** (for DeepSeek-R1-Distill and other general models)  
+  See `requirements-deer.txt` (e.g., `vllm==0.6.1`, `transformers==4.46.3`)
+- **deer-qwen3** (for Qwen3 models)  
+  See `requirements-deer-qwen3.txt` (e.g., `vllm==0.17.1`, `transformers==4.57.6`)
 
-Experimental results presented in bar charts.
+Example with conda:
 
-<p align="center"> <img src="./images/deer-ds.png" style="width: 90%;" id="title-icon">       </p>
-
-<p align="center"> <img src="./images/deer-qwen3.png" style="width: 90%;" id="title-icon">       </p>
-
----
-
-
-## 🚀 Quick Start
-### 1. Installation
 ```bash
-git clone https://github.com/yourusername/DEER.git
-cd DEER
-pip install -r requirements.txt
+conda create -n deer python=3.10 -y
+conda activate deer
+pip install -r requirements-deer.txt
 ```
 
-### 2. DEER on vLLM (Recommended)
-Considering efficiency, we recommend reproducing the results using the code based on the **vLLM** framework.
-
-#### For Most Reasoning Models
-```
-CUDA_VISIBLE_DEVICES=1 python ../vllm-deer.py \
-    --model_name_or_path "./DeepSeek-R1-Distill-Qwen-14B" \
-    --dataset_dir "./data/" \
-    --output_path "./outputs" \
-    --dataset "math" \
-    --threshold 0.95 \
-    --max_generated_tokens 16000 \
-    --think_ratio 0.6 \
-    --batch_size 2000 \
-    --policy avg1 \
-    --dtype bfloat16 \
-    --gpu-memory-utilization 0.9 \ 
-```
-or run:
 ```bash
-bash ./bashes/bash-vllm-deer.sh.
+conda create -n deer-qwen3 python=3.10 -y
+conda activate deer-qwen3
+pip install -r requirements-deer-qwen3.txt
 ```
 
+## Quick Start
 
-#### For Qwen3 Models
+Run the following commands from the `Code/AEE` directory.
 
-```
-CUDA_VISIBLE_DEVICES=1 python ../vllm-deer-qwen3.py \
-    --model_name_or_path "./Qwen3-4B" \
-    --dataset_dir "./data/" \
-    --output_path "./outputs" \
-    --dataset "math" \
-    --threshold 0.95 \
-    --max_generated_tokens 16000 \
-    --think_ratio 0.8 \
-    --batch_size 2000 \
-    --dtype bfloat16 \
-    --policy avg2 \
-    --gpu-memory-utilization 0.9 \
-```
-or run:
+### 1) Run AEE (DeepSeek-R1-Distill)
+
 ```bash
-bash ./bashes/bash-vllm-deer-qwen3.sh.
+PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 conda run -n deer python vllm-aee.py \
+  --model_name_or_path "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B" \
+  --dataset_dir "./data/" \
+  --output_path "./outputs" \
+  --dataset "math_small" \
+  --threshold 0.95 \
+  --base_threshold 0.90 \
+  --ema_alpha 0.7 \
+  --adaptive_beta 1.0 \
+  --consistency_window 2 \
+  --max_generated_tokens 2048 \
+  --think_ratio 0.6 \
+  --batch_size 64 \
+  --policy avg1 \
+  --dtype bfloat16 \
+  --gpu-memory-utilization 0.80
 ```
-In our experiments, we found that Qwen3-series models tend to be over-confident in confidence prediction, so we made some modifications to its implementation. 
-- The calculation of answer confidence was changed from arithmetic mean to geometric mean.
-- An additional condition must be satisfied for early exit: the model must generate <\/think> after the trial answer.
 
-### 3. DEER on Transformers
+### 2) Run AEE (Qwen3)
 
-For inference using HuggingFace Transformers (without vLLM), run:
 ```bash
-bash ./bashes/bash-vanilla-deer.sh
+PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 conda run -n deer-qwen3 python vllm-aee-qwen3.py \
+  --model_name_or_path "Qwen/Qwen3-4B" \
+  --dataset_dir "./data/" \
+  --output_path "./outputs" \
+  --dataset "math_small" \
+  --threshold 0.95 \
+  --base_threshold 0.90 \
+  --ema_alpha 0.7 \
+  --adaptive_beta 1.0 \
+  --consistency_window 2 \
+  --max_generated_tokens 1024 \
+  --think_ratio 0.8 \
+  --batch_size 16 \
+  --policy avg2 \
+  --dtype bfloat16 \
+  --gpu-memory-utilization 0.85
 ```
 
+### 3) Evaluate Outputs
 
-## 📊 Evaluation
-
-DEER currently supports evaluation on 7 reasoning benchmarks. The rule-based evaluation for these benchmarks is based on the code implementation from the project [LIMO](https://github.com/GAIR-NLP/LIMO/tree/main).
-
-
-```
-python ../check.py \
-    --model_name_or_path "./DeepSeek-R1-Distill-Qwen-14B" \
-    --data_name "math" \
-    --generation_path "your_output.jsonl" \
-```
-or run
 ```bash
-bash ./bashes/bash-check-correct.sh
+PYTHONNOUSERSITE=1 conda run -n deer python check.py \
+  --model_name_or_path "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B" \
+  --data_name "math_small" \
+  --generation_path "YOUR_OUTPUT.jsonl"
 ```
 
+## Supported Models and Datasets
 
+- Models:
+  - DeepSeek-R1-Distill-Qwen (1.5B, 7B)
+  - Qwen3 (4B, 14B)
+- Datasets:
+  - MATH, GSM8K, AIME, AMC, GPQA, OlympiadBench
 
-## 📜 Citation
-If you use DEER in your research, please cite our paper:
+## Acknowledgement and Citation
+
+This project extends the DEER framework. If you use this code, please cite the original DEER paper:
+
 ```bibtex
 @article{yang2025dynamic,
   title={Dynamic Early Exit in Reasoning Models},
@@ -126,7 +123,3 @@ If you use DEER in your research, please cite our paper:
   year={2025}
 }
 ```
-## 💬 Community
-
-Join our WeChat group for discussions:
-<p align="center"> <img src="./images/WechatIMG.jpeg" style="width: 85%;" id="title-icon">       </p>
